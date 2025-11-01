@@ -2,8 +2,8 @@ name: Build rummage PNGs
 
 on:
   schedule:
-    - cron: "*/15 * * * *"    # every 15 minutes; change as you like
-  workflow_dispatch:           # <— enables the "Run workflow" button
+    - cron: "*/15 * * * *"     # every 15 minutes
+  workflow_dispatch:            # manual "Run workflow" button
 
 permissions:
   contents: write
@@ -17,20 +17,35 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Print env (debug)
+        run: |
+          uname -a
+          node -v || true
+          npm -v || true
+
+      - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      - name: Install deps
-        run: npm install
+      - name: Install deps (npm ci if lockfile exists)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium (and system deps)
+        run: |
+          npx playwright install-deps chromium
+          npx playwright install chromium
 
       - name: Generate screenshots
         env:
@@ -38,10 +53,21 @@ jobs:
           VIEWPORT_H: "1200"
           DEVICE_SCALE: "2"
           STABILIZE_MS: "1200"
+          # force the full map box for all 3:
           KILIMA_SELECTOR: ".leaflet-container"
           BAHARI_SELECTOR: ".leaflet-container"
           ELDERWOOD_SELECTOR: ".leaflet-container"
         run: npm run shot
+
+      - name: Ensure docs/ exists (even on first run)
+        run: mkdir -p docs
+
+      - name: List outputs (debug)
+        run: |
+          file docs/kilima.png || true
+          file docs/bahari.png || true
+          file docs/elderwood.png || true
+          ls -lh docs || true
 
       - name: Commit PNGs to docs/
         run: |
