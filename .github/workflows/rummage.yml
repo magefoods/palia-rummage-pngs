@@ -1,0 +1,38 @@
+name: Build rummage PNGs
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (adjust as you like)
+  workflow_dispatch:         # allows manual "Run workflow"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate screenshots
+        env:
+          VIEWPORT_W: "1600"
+          VIEWPORT_H: "1000"
+        run: npm run shot
+
+      - name: Commit PNGs to docs/
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/kilima.png docs/bahari.png docs/elderwood.png
+          git commit -m "update rummage pngs" || echo "No changes to commit"
+          git push
