@@ -1,23 +1,17 @@
-// scripts/shot.js — element screenshots of the full map container
+// scripts/shot.js — pick the largest *visible* Leaflet container and screenshot it
 import { chromium } from "playwright";
 import fs from "fs/promises";
 
-const VIEWPORT_W = parseInt(process.env.VIEWPORT_W || "1920", 10);
-const VIEWPORT_H = parseInt(process.env.VIEWPORT_H || "1200", 10);
+const VIEWPORT_W   = parseInt(process.env.VIEWPORT_W   || "1920", 10);
+const VIEWPORT_H   = parseInt(process.env.VIEWPORT_H   || "1200", 10);
 const DEVICE_SCALE = parseFloat(process.env.DEVICE_SCALE || "2");
-const STABILIZE_MS = parseInt(process.env.STABILIZE_MS || "800", 10);
-
-const KILIMA_SELECTOR    = process.env.KILIMA_SELECTOR    || ".leaflet-container";
-const BAHARI_SELECTOR    = process.env.BAHARI_SELECTOR    || ".leaflet-container";
-const ELDERWOOD_SELECTOR = process.env.ELDERWOOD_SELECTOR || ".leaflet-container";
+const STABILIZE_MS = parseInt(process.env.STABILIZE_MS || "1200", 10);
 
 const TARGETS = [
-  { url: "https://palia.th.gl/rummage-pile?map=kilima-valley", out: "docs/kilima.png",    sel: KILIMA_SELECTOR },
-  { url: "https://palia.th.gl/rummage-pile?map=bahari-bay",    out: "docs/bahari.png",    sel: BAHARI_SELECTOR },
-  { url: "https://palia.th.gl/rummage-pile?map=elderwood",     out: "docs/elderwood.png", sel: ELDERWOOD_SELECTOR },
+  { url: "https://palia.th.gl/rummage-pile?map=kilima-valley", tabText: "Kilima Valley", out: "docs/kilima.png" },
+  { url: "https://palia.th.gl/rummage-pile?map=bahari-bay",    tabText: "Bahari Bay",   out: "docs/bahari.png" },
+  { url: "https://palia.th.gl/rummage-pile?map=elderwood",     tabText: "Elderwood",    out: "docs/elderwood.png" },
 ];
-
-const FALLBACKS = ["#map", ".maplibregl-map", ".leaflet-container"];
 
 async function hideChrome(page) {
   await page.addStyleTag({ content: `
@@ -27,65 +21,90 @@ async function hideChrome(page) {
   `});
 }
 
-async function waitSizeStable(page, selector) {
-  const loc = page.locator(selector).first();
-  await loc.waitFor({ state: "visible", timeout: 30000 });
+// Click the correct tab if the site renders tabs
+async function clickTabIfPresent(page, text) {
+  const tab = page.getByRole("tab", { name: text }).first();
+  if (await tab.count()) {
+    await tab.click().catch(()=>{});
+  }
+}
 
-  let last = "";
-  let stableSince = Date.now();
+// Return a locator for the largest *visible* .leaflet-container on the page
+async function largestVisibleLeaflet(page, stableMs) {
   const start = Date.now();
+  let stableSince = Date.now();
+  let lastKey = "";
 
-  while (Date.now() - start < 15000) {
-    const box = await loc.boundingBox();
-    if (!box || box.width < 200 || box.height < 150) {
-      await page.waitForTimeout(120);
-      continue;
+  // Try up to ~12s to let layout settle
+  while (Date.now() - start < 12000) {
+    const idx = await page.evaluate(() => {
+      const isVisible = (el) => {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 200 && r.height > 150 && r.bottom > 0 && r.right > 0;
+      };
+      const els = Array.from(document.querySelectorAll(".leaflet-container"));
+      let best = { i: -1, area: 0, rect: null };
+      els.forEach((el, i) => {
+        if (!isVisible(el)) return;
+        const r = el.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (area > best.area) best = { i, area, rect: { x:r.x, y:r.y, w:r.width, h:r.height } };
+      });
+      return best.i;
+    });
+
+    if (idx >= 0) {
+      // wait for size to be stable
+      const key = await page.evaluate((i) => {
+        const el = document.querySelectorAll(".leaflet-container")[i];
+        if (!el) return "";
+        const r = el.getBoundingClientRect();
+        return `${Math.round(r.x)}:${Math.round(r.y)}:${Math.round(r.width)}:${Math.round(r.height)}`;
+      }, idx);
+
+      if (key === lastKey) {
+        if (Date.now() - stableSince >= stableMs) {
+          return page.locator(".leaflet-container").nth(idx);
+        }
+      } else {
+        lastKey = key;
+        stableSince = Date.now();
+      }
     }
-    const key = `${Math.round(box.x)}:${Math.round(box.y)}:${Math.round(box.width)}:${Math.round(box.height)}`;
-    if (key === last) {
-      if (Date.now() - stableSince >= STABILIZE_MS) return loc;
-    } else {
-      last = key;
-      stableSince = Date.now();
-    }
-    await page.waitForTimeout(120);
+
+    await page.waitForTimeout(150);
   }
-  return loc; // proceed even if not perfectly stable
+
+  // Fallback to first Leaflet container (might still work)
+  const any = page.locator(".leaflet-container").first();
+  if (await any.count()) return any;
+  return null;
 }
 
-async function captureMap(page, preferred) {
-  let sel = preferred;
-  if (!(await page.locator(sel).count())) {
-    for (const fb of FALLBACKS) if (await page.locator(fb).count()) { sel = fb; break; }
-  }
-  const loc = await waitSizeStable(page, sel);
-  await loc.scrollIntoViewIfNeeded();
-  return await loc.screenshot({ type: "png", animations: "disabled" });
-}
-
-async function snapOne(url, outfile, selector) {
+async function snapOne({ url, tabText, out }) {
   const browser = await chromium.launch(); // headless
   try {
     const context = await browser.newContext({
       viewport: { width: VIEWPORT_W, height: VIEWPORT_H },
-      deviceScaleFactor: DEVICE_SCALE,
+      deviceScaleFactor: DEVICE_SCALE
     });
     const page = await context.newPage();
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 120000 });
-      await hideChrome(page);
+    await page.goto(url, { waitUntil: "networkidle", timeout: 120000 });
+    await hideChrome(page);
+    await clickTabIfPresent(page, tabText);
 
-      try {
-        const buf = await captureMap(page, selector);
-        await fs.mkdir("docs", { recursive: true });
-        await fs.writeFile(outfile, buf);
-        return;
-      } catch (e) {
-        if (attempt === 1) await page.waitForTimeout(1000);
-        else throw e;
-      }
-    }
+    const target = await largestVisibleLeaflet(page, STABILIZE_MS);
+    if (!target) throw new Error("No visible .leaflet-container found.");
+
+    await target.scrollIntoViewIfNeeded();
+    const buf = await target.screenshot({ type: "png", animations: "disabled" });
+
+    await fs.mkdir("docs", { recursive: true });
+    await fs.writeFile(out, buf);
+    console.log("Wrote:", out);
   } finally {
     await browser.close();
   }
@@ -93,10 +112,9 @@ async function snapOne(url, outfile, selector) {
 
 async function run() {
   for (const t of TARGETS) {
-    console.log("Shooting:", t.url, "selector:", t.sel);
-    await snapOne(t.url, t.out, t.sel);
-    console.log("Wrote:", t.out);
+    console.log("Shooting:", t.url);
+    await snapOne(t);
   }
 }
 
-run().catch(err => { console.error(err); process.exit(1); });
+run().catch(e => { console.error(e); process.exit(1); });
