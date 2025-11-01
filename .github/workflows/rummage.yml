@@ -2,8 +2,13 @@ name: Build rummage PNGs
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes (adjust as you like)
-  workflow_dispatch:         # allows manual "Run workflow"
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # allow committing PNGs to the repo
+  pages: write           # allow Pages to publish (satisfies the pages workflow)
+  id-token: write
 
 jobs:
   build:
