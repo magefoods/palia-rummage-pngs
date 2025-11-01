@@ -22,7 +22,7 @@ const FALLBACKS = ["#map", ".maplibregl-map", ".leaflet-container"];
 async function hideChrome(page) {
   await page.addStyleTag({ content: `
     header, nav, footer, .tabs, .tabbar, .maplibregl-control-container,
-    .ad, [id*="ad"], [class*="ad"] { display:none!important; visibility:hidden!important; }
+    .ad, [id*="ad"], [class*="ad"] { display:none!important; }
     body { background:#000!important; }
   `});
 }
@@ -30,21 +30,27 @@ async function hideChrome(page) {
 async function waitSizeStable(page, selector) {
   const loc = page.locator(selector).first();
   await loc.waitFor({ state: "visible", timeout: 30000 });
+
   let last = "";
   let stableSince = Date.now();
   const start = Date.now();
+
   while (Date.now() - start < 15000) {
     const box = await loc.boundingBox();
-    if (!box || box.width < 200 || box.height < 150) { await page.waitForTimeout(100); continue; }
+    if (!box || box.width < 200 || box.height < 150) {
+      await page.waitForTimeout(120);
+      continue;
+    }
     const key = `${Math.round(box.x)}:${Math.round(box.y)}:${Math.round(box.width)}:${Math.round(box.height)}`;
     if (key === last) {
       if (Date.now() - stableSince >= STABILIZE_MS) return loc;
     } else {
-      last = key; stableSince = Date.now();
+      last = key;
+      stableSince = Date.now();
     }
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(120);
   }
-  return loc;
+  return loc; // proceed even if not perfectly stable
 }
 
 async function captureMap(page, preferred) {
@@ -58,16 +64,18 @@ async function captureMap(page, preferred) {
 }
 
 async function snapOne(url, outfile, selector) {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(); // headless
   try {
     const context = await browser.newContext({
       viewport: { width: VIEWPORT_W, height: VIEWPORT_H },
       deviceScaleFactor: DEVICE_SCALE,
     });
     const page = await context.newPage();
+
     for (let attempt = 1; attempt <= 2; attempt++) {
       await page.goto(url, { waitUntil: "networkidle", timeout: 120000 });
       await hideChrome(page);
+
       try {
         const buf = await captureMap(page, selector);
         await fs.mkdir("docs", { recursive: true });
