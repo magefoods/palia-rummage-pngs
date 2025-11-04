@@ -1,11 +1,10 @@
 {
   "name": "palia-rummage-pngs",
   "private": true,
-  "type": "module",
   "scripts": {
-    "shot": "node scripts/shot.js"
+    "grab": "node scripts/shot.js"
   },
   "dependencies": {
-    "playwright": "^1.47.2"
+    "playwright": "^1.48.0"
   }
 }
