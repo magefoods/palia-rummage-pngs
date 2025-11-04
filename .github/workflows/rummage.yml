@@ -1,66 +1,50 @@
-name: Build rummage PNGs
-
+name: Update rummage PNGs
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes (adjust if you want)
-  workflow_dispatch:          # << shows the "Run workflow" button
-
-permissions:
-  contents: write             # needed to commit pngs
-  pages: write
-  id-token: write
-
-concurrency:
-  group: rummage
-  cancel-in-progress: false
+    - cron: "12 14 * * *"   # daily run; adjust UTC time if you want
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Setup Node 20
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
-      - name: Install NPM deps
+      - name: Install deps
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm ci
+          npx playwright install --with-deps
 
-      - name: Install Playwright Chromium + system deps
+      - name: Grab screenshots
+        run: npm run grab
+
+      - name: Verify PNGs exist & are big enough
         run: |
-          npx playwright install-deps chromium
-          npx playwright install chromium
+          ls -lh docs/*.png || true
+          for f in docs/*.png; do
+            echo "checking $f"
+            test -s "$f" && [ $(stat -c%s "$f") -gt 50000 ] || { echo "$f too small"; exit 1; }
+          done
 
-      - name: Generate screenshots (never fail)
+      - name: Commit & push if changed
         env:
-          VIEWPORT_W: "1920"
-          VIEWPORT_H: "1200"
-          DEVICE_SCALE: "2"
-          STABILIZE_MS: "1200"
-          MAP_PADDING: "10"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p docs
-          # run; if it fails, do not break the job
-          npm run shot || true
-
-      - name: Ensure 3 PNGs exist (create placeholders if missing)
-        run: |
-          place() { convert -size 1600x900 xc:black -fill white -pointsize 28 \
-            -gravity center -annotate 0 "$1" "$2"; }
-          if ! [ -f docs/kilima.png ];   then place "kilima capture failed"   docs/kilima.png; fi
-          if ! [ -f docs/bahari.png ];   then place "bahari capture failed"   docs/bahari.png; fi
-          if ! [ -f docs/elderwood.png ]; then place "elderwood capture failed" docs/elderwood.png; fi
-        shell: bash
-      - name: Commit updated PNGs
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/kilima.png docs/bahari.png docs/elderwood.png
-          git commit -m "update rummage pngs" || echo "No changes to commit"
-          git push
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/*.png
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          git commit -m "update rummage pngs"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:${GITHUB_REF#refs/heads/}
