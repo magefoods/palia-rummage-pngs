@@ -1,7 +1,6 @@
 // scripts/shot.js
-// Screenshot the visible map area from palia.th.gl for 3 regions.
-// No scrolling/zooming. We wait for tiles/canvas to render, then
-// screenshot the biggest map element (canvas/img/map container).
+// Screenshot the visible map area for 3 regions—no scrolling/zooming.
+// Robust navigation (no networkidle), render-aware waits, and retries.
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -14,7 +13,7 @@ const SHOTS = [
   { name: 'elderwood.png', url: 'https://palia.th.gl/rummage-pile?map=elderwood' },
 ];
 
-// Smallest allowed image (guards against corrupt 0-byte/HTML screenshots)
+// Guard against corrupt/HTML screenshots
 const MIN_BYTES = 20_000;
 
 function isValidPng(buf) {
@@ -24,9 +23,9 @@ function isValidPng(buf) {
 }
 
 // Wait until tiles/canvas are actually drawn (generic heuristic)
-async function waitForMapRender(page, timeout = 20_000) {
+async function waitForMapRender(page, timeout = 25_000) {
   await page.waitForFunction(() => {
-    // loaded map tiles (Leaflet/Mapbox/etc.)
+    // loaded map tiles
     const imgs = Array.from(document.querySelectorAll('img')).filter(i =>
       i.naturalWidth > 0 &&
       i.naturalHeight > 0 &&
@@ -44,7 +43,6 @@ async function waitForMapRender(page, timeout = 20_000) {
 
 // Choose the largest likely "map" element to screenshot
 async function getMapLocator(page) {
-  // Common containers first
   const candidates = [
     '.leaflet-container',
     '.mapboxgl-map',
@@ -55,8 +53,6 @@ async function getMapLocator(page) {
     'canvas',
     'img'
   ];
-
-  // Try preferred selectors
   for (const sel of candidates) {
     const loc = page.locator(sel).first();
     if (await loc.count()) {
@@ -67,8 +63,7 @@ async function getMapLocator(page) {
       } catch {}
     }
   }
-
-  // Fallback: pick the largest visible canvas/img on the page
+  // Fallback: biggest visible canvas/img
   const handle = await page.evaluateHandle(() => {
     const els = Array.from(document.querySelectorAll('canvas, img'))
       .filter(e => e.offsetParent !== null);
@@ -84,42 +79,74 @@ async function getMapLocator(page) {
   return page.locator('canvas, img').filter({ has: handle });
 }
 
+// Retry wrapper for flaky navigations (no networkidle)
+async function gotoRetry(page, url, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+      // Give the page a brief moment to finish late scripts
+      await page.waitForLoadState('load', { timeout: 30_000 }).catch(() => {});
+      return;
+    } catch (e) {
+      lastErr = e;
+      const backoff = 1500 * (i + 1);
+      console.warn(`[gotoRetry] attempt ${i + 1} failed: ${e.message} — waiting ${backoff}ms`);
+      await page.waitForTimeout(backoff);
+    }
+  }
+  throw lastErr;
+}
+
 (async () => {
   if (!fs.existsSync(OUTDIR)) fs.mkdirSync(OUTDIR, { recursive: true });
 
   const browser = await chromium.launch({ headless: true });
   const ctx = await browser.newContext({
     deviceScaleFactor: 2,
-    viewport: { width: 2200, height: 1400 }
+    viewport: { width: 2200, height: 1400 },
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 RummageBot/1.0',
   });
+
+  // Optional: block analytics/fonts to avoid long-hanging requests
   const page = await ctx.newPage();
+  await page.route('**/*', route => {
+    const url = route.request().url();
+    if (/\.(woff2?|ttf|otf)$/.test(url) || /google-analytics|googletag|gtag|segment|sentry/i.test(url)) {
+      return route.abort();
+    }
+    return route.continue();
+  });
 
   for (const { name, url } of SHOTS) {
     console.log(`[shot] ${name} ← ${url}`);
 
-    // 1) Navigate and let things settle
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
-    await waitForMapRender(page, 20_000);
-    await page.waitForTimeout(300); // tiny extra settle
+    // 1) Navigate (no networkidle), with retries
+    await gotoRetry(page, url, 3);
 
-    // 2) Get the map element as-is (no zoom/scroll)
+    // 2) Wait for map render heuristics
+    await waitForMapRender(page, 25_000);
+    await page.waitForTimeout(300); // tiny settle
+
+    // 3) Get the map element
     const mapLoc = await getMapLocator(page);
 
-    // Optional: hide controls/tabs so we only capture the map area
+    // Optional: hide controls so only map area is captured
     await page.addStyleTag({ content: `
       .leaflet-control, .mapboxgl-ctrl, [class*="control"] { opacity: 0 !important; pointer-events: none !important; }
       .leaflet-bottom.leaflet-right, .mapboxgl-ctrl-bottom-right { display: none !important; }
     `});
 
-    // 3) Screenshot the element
+    // 4) Screenshot element
     const buf = await mapLoc.screenshot({ type: 'png', animations: 'disabled' });
 
-    // 4) Validate & write
+    // 5) Validate & write
     if (!isValidPng(buf) || buf.length < MIN_BYTES) {
       throw new Error(`Refusing to write ${name}: invalid/too-small PNG (len=${buf?.length ?? 0})`);
     }
     const outPath = path.join(OUTDIR, name);
-    fs.writeFileSync(outPath, buf); // binary write
+    fs.writeFileSync(outPath, buf);
     console.log(`[ok] wrote ${outPath} (${buf.length} bytes)`);
   }
 
