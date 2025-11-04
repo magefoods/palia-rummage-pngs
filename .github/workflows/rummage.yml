@@ -18,10 +18,10 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install deps
+          - name: Install deps
         run: |
-          npm ci
-          npx playwright install --with-deps
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
 
       - name: Grab screenshots
         run: npm run grab
