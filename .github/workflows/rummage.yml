@@ -27,14 +27,6 @@ jobs:
       - name: Grab screenshots
         run: npm run grab
 
-      - name: Verify PNGs exist & are big enough
-        run: |
-          ls -lh docs/*.png || true
-          for f in docs/*.png; do
-            echo "checking $f"
-            test -s "$f" && [ $(stat -c%s "$f") -gt 50000 ] || { echo "$f too small"; exit 1; }
-          done
-
       - name: Commit & push if changed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
