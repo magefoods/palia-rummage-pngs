@@ -37,10 +37,10 @@ async function waitForMapRender(page, timeout = 25_000) {
   }, { timeout });
 }
 
-// Return a clip rect {x,y,width,height} for the biggest visible "map-like" element
+// Return a clip rect {x,y,width,height} for the (hopefully) only canvas on the page
 async function getMapClip(page) {
   const rect = await page.evaluate(() => {
-    const container = document.querySelector('.leaflet-container');
+    const container = document.querySelector('canvas');
     return container.getBoundingClientRect();
   });
 
