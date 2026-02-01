@@ -33,6 +33,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # We add ONLY the images so we don't accidentally upload node_modules
           git add docs/*.png
-          git commit -m "update rummage pngs"
-          git push
+          
+          # The Safety Check: This prevents the "Exit Code 1" error
+          if [ -n "$(git status --porcelain docs/)" ]; then
+            git commit -m "update rummage pngs"
+            git push
+          else
+            echo "No changes detected in screenshots. Skipping commit."
+          fi
