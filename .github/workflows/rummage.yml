@@ -3,7 +3,7 @@ name: Update rummage PNGs
 on:
   workflow_dispatch:
   schedule:
-    - cron: '5 4 * * *'   # daily run; adjust UTC time if you want
+    - cron: '0 6 * * *'   # daily run; adjust UTC time if you want
 
 jobs:
   build:
